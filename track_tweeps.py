@@ -19,7 +19,12 @@ def format_user_info(user):
 
 def fetch_current_followers(screen_name, auth, max_pages=20, log=sys.stdout):
 
-    url = "https://api.twitter.com/1.1/followers/list.json?screen_name=%s&skip_status=true&include_user_entities=false&cursor=%s"
+    # ONLY RETURNS 200 at a time
+    url = "https://api.twitter.com/1.1/followers/list.json?screen_name=%s&skip_status=true&include_user_entities=false&cursor=%s&count=200"
+
+    # RETURNS 5,000 at a time (but only the ids)
+    #url = "https://api.twitter.com/1.1/followers/ids.json?screen_name=%scursor=%s"
+
 
     followers = []
 
