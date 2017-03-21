@@ -17,19 +17,27 @@ def format_user_info(user):
               u' ' if user['verified'] else u' NOT',
               user['description'])
 
-def fetch_current_followers(screen_name, auth, max_pages=20, log=sys.stdout):
+def fetch_current_followers(screen_name, auth, max_calls=100, log=sys.stdout):
+
+    show_url = "https://api.twitter.com/1.1/users/show.json?screen_name=%s" % screen_name
+    total_count = requests.get(show_url, auth=auth).json()['followers_count']
+
+    # TODO: NOT SUPPORTED
+    # RETURNS 5,000 at a time (but only the ids)
+    # ids_url = "https://api.twitter.com/1.1/followers/ids.json?screen_name=%s&cursor=%s"
 
     # ONLY RETURNS 200 at a time
-    url = "https://api.twitter.com/1.1/followers/list.json?screen_name=%s&skip_status=true&include_user_entities=false&cursor=%s&count=200"
-
-    # RETURNS 5,000 at a time (but only the ids)
-    #url = "https://api.twitter.com/1.1/followers/ids.json?screen_name=%scursor=%s"
-
+    list_calls = (total_count / 200) + 1 
+    if list_calls <= max_calls:
+        url = "https://api.twitter.com/1.1/followers/list.json?screen_name=%s&skip_status=true&include_user_entities=false&cursor=%s&count=200"
+    else:
+        raise Exception("%s has %d followers - require <= %d followers" \
+                       % (screen_name, total_count, max_calls * 200))
 
     followers = []
 
     next_cursor="-1"
-    for x in range(max_pages):
+    for x in range(max_calls):
         page_url = url % (screen_name, next_cursor)
         followers_chunk = requests.get(page_url, auth=auth).json()
         if 'errors' in followers_chunk:
@@ -41,7 +49,7 @@ def fetch_current_followers(screen_name, auth, max_pages=20, log=sys.stdout):
 
         next_cursor = followers_chunk.get('next_cursor', None)
         if not next_cursor:
-            break
+            return followers
 
     return followers
 
@@ -62,16 +70,15 @@ def debug_contents(f):
         pdb.set_trace()
 
 
-def track_deltas(screen_name, auth, log=sys.stdout):
+def track_deltas(screen_name, auth, tweeps_dir, log=sys.stdout):
 
     # prevent API usage limits by not querying
     # test_mode = True
     test_mode = False
 
     now = datetime.datetime.now().strftime('%Y%m%d_%H:%M:%S')
-    pdir=os.path.dirname(sys.argv[0])
 
-    out_dir = os.path.join(pdir, 'followers', screen_name)
+    out_dir = os.path.join(tweeps_dir, screen_name)
 
     followers_file = os.path.join(out_dir, 'followers.db')
     quitters_file = os.path.join(out_dir, 'quitters-%s.db' % now)
@@ -82,6 +89,7 @@ def track_deltas(screen_name, auth, log=sys.stdout):
     except OSError, e:
         if e.errno != errno.EEXIST:
             raise
+
     last_screens = set([])
     if os.path.exists(followers_file):
         last_followers = pickle.load(file(followers_file, 'r'))
@@ -98,44 +106,73 @@ def track_deltas(screen_name, auth, log=sys.stdout):
     newbies_screens = now_screens - last_screens
 
     if not len(quitters_screens) and not len(newbies_screens):
-        log.write("No change - %s has %d followers\n" \
-                  % (screen_name, len(last_screens)))
+        log.write("At %s, no change - @%s has the same %d followers\n" \
+                  % (now, screen_name, len(last_screens)))
 
     else:
-        log.write("%s HAD %d followers\n" % (screen_name, len(last_screens)))
-        log.write("%s HAS %d followers\n" % (screen_name, len(now_screens)))
-
+        delta = len(now_screens) - len(last_screens)
+        change = '='
+        if delta < 0:
+            change = '%d' % delta
+        elif delta > 0:
+            change = '+%d' % delta
+        log.write("At %s, @%s has %d(%s) total followers\n" % (now, screen_name,
+                                                       len(now_screens),
+                                                       change
+                                                       ))
         if len(quitters_screens):
-            log.write("%s lost: %s\n" % (screen_name, quitters_screens))
+            log.write("@%s lost %d: %s\n" % (screen_name, len(quitters_screens),
+                                            quitters_screens))
             quitters = [last_xformed[q] for q in quitters_screens]
             for q in quitters:
-                log.write('GOODBYE %s\n' % format_user_info(q))
+                log.write('- GOODBYE %s\n' % format_user_info(q))
             with open(quitters_file, 'w') as qf:
                 pickle.dump(quitters, qf)
            
         if len(newbies_screens):
-            log.write("%s got: %s\n" % (screen_name, newbies_screens))
+            log.write("@%s got %d: %s\n" % (screen_name, len(newbies_screens),
+                                            newbies_screens))
             newbies = [now_xformed[n] for n in newbies_screens]
             for n in newbies:
-                log.write('HELLO %s\n' % format_user_info(n))
+                log.write('+ HELLO %s\n' % format_user_info(n))
             with open(newbies_file, 'w') as nf:
                 pickle.dump(newbies, nf)
 
         if now_followers and not test_mode:
             with open(followers_file, 'w') as ff:
                 pickle.dump(now_followers, ff)
-   
 
+
+def load_oauth(d):
+    req_keys = ('app_key', 'app_secret', 'user_token', 'user_secret')
+    auths_file = os.path.join(d, 'auths.txt')
+    if not os.path.exists(auths_file):
+        raise Exception("Create %s with dict of required keys: %s" \
+                        % (auths_file, ', '.join(req_keys)))
+
+    auths = eval(file(auths_file, 'r').read())
+    missing_keys = [x for x in req_keys if x not in auths]
+    if missing_keys:
+        raise Exception("Missing auth keys: %s" % ', '.join(missing_keys))
+
+    return OAuth1(auths["app_key"],
+                  auths["app_secret"],
+                  auths["user_token"],
+                  auths["user_secret"])
+   
 if __name__ == '__main__':
+
+    proggy = os.path.splitext(os.path.basename(sys.argv[0]))[0]
+    default_tweeps_dir=os.path.join(os.path.expanduser("~"), '.'+proggy)
     parser = argparse.ArgumentParser(description='Track twitter followers')
-    parser.add_argument('auth', default="auth.txt",
-                        type=argparse.FileType('r'),
-                        help='file where auth and user keys are stored')
-    parser.add_argument('-s', '--screen_name', dest='screen_names', action='append',
+    parser.add_argument('-d', '--dir', dest='dir', default=default_tweeps_dir,
+                        help='dir where everything is stored')
+    parser.add_argument('-s', '--screen_name', dest='screen_names',
+                        action='append',
                         help='twitter account to check')
     parser.add_argument('-f', '--fname', dest='fnames', action='append',
                         help='file to dump')
-    parser.add_argument('-d', '--debugfname', dest='dfnames', action='append',
+    parser.add_argument('-F', '--debugfname', dest='dfnames', action='append',
                         help='file to debug')
     parser.add_argument('-l', '--log', default=sys.stdout,
                         type=argparse.FileType('a'),
@@ -151,13 +188,17 @@ if __name__ == '__main__':
 
     if args.screen_names:
 
-        auths = eval(args.auth.read())
+        # will store info here
+        try:
+            os.makedirs(args.dir)
+        except OSError, e:
+            if e.errno != errno.EEXIST:
+                raise
 
-        auth = OAuth1(auths["app_key"],
-                      auths["app_secret"],
-                      auths["user_token"],
-                      auths["user_secret"])
+        # will need OAuth to make API calls
+        auth = load_oauth(args.dir)
+
         for screen_name in args.screen_names:
-            track_deltas(screen_name, auth, log=args.log)
+            track_deltas(screen_name, auth, args.dir, log=args.log)
 
     args.log.close()
