@@ -1,7 +1,7 @@
 #/usr/bin/env python
 # -*- coding: utf-8 -*-
 import sys, os, errno
-import datetime
+import time, datetime
 import requests
 from requests_oauthlib import OAuth1
 import pickle
@@ -18,43 +18,53 @@ def format_user_info(user):
               user['description'])
     return val.encode('utf-8')
 
-def fetch_current_followers(screen_name, auth, max_calls=100, log=sys.stdout):
-    return _fetch_current_associates(screen_name, auth, 'followers',
-                                    max_calls, log)
-def fetch_current_friends(screen_name, auth, max_calls=100, log=sys.stdout):
-    return _fetch_current_associates(screen_name, auth, 'friends',
-                                    max_calls, log)
-
 def _fetch_current_associates(screen_name, auth, track_type,
-                             max_calls=100, log=sys.stdout):
+                              max_calls=15, sleep=15,
+                              allow_slow=False, log=sys.stdout):
 
     show_url = "https://api.twitter.com/1.1/users/show.json?screen_name=%s" % screen_name
     total_count = requests.get(show_url, auth=auth).json()['followers_count']
 
-    # TODO: NOT SUPPORTED
+    # TODO: XXX - NOT YET SUPPORTED
     # RETURNS 5,000 at a time (but only the ids)
     # ids_url = "https://api.twitter.com/1.1/followers/ids.json?screen_name=%s&cursor=%s"
 
     # ONLY RETURNS 200 at a time
+    url = "https://api.twitter.com/1.1/%s/list.json?screen_name=%s&skip_status=true&include_user_entities=false&cursor=%s&count=200"
     list_calls = (total_count / 200) + 1 
-    if list_calls <= max_calls:
-        url = "https://api.twitter.com/1.1/%s/list.json?screen_name=%s&skip_status=true&include_user_entities=false&cursor=%s&count=200"
-    else:
-        raise Exception("%s has %d followers - require <= %d followers" \
-                       % (screen_name, total_count, max_calls * 200))
+    if list_calls > max_calls:
+        warning = "%s has %d %s, exceeds %d" \
+                  % (screen_name, total_count, track_type, max_calls * 200)
+        if not allow_slow:
+            raise Exception(warning)
+
+        log.write(warning + ' - slow mode enabled...\n')
+        estimate = sleep * (total_count / (200 * max_calls))
+        log.write("This will take about %d minutes\n" % estimate)
+        log.write("Sleeping for %d minutes every %d calls...\n" \
+                   % (sleep, max_calls))
 
     associates = []
 
     next_cursor="-1"
-    for x in range(max_calls):
+    calls = 0
+    while(1):
+        if calls >= max_calls:
+            log.write("Sleeping for %d minutes...\n" % sleep)
+            time.sleep(60 * sleep)
+            calls = 0
+
         page_url = url % (track_type, screen_name, next_cursor)
+
+        # associates_chunk = {'next_cursor':'foo',
+        #                     'users':[x for x in range(200)]}
         associates_chunk = requests.get(page_url, auth=auth).json()
         if 'errors' in associates_chunk:
             log.write('%s\n' % associates_chunk['errors'])
             sys.exit(1)
 
+        calls = calls + 1
         associates.extend(associates_chunk['users'])
-        #log.write('%s\n' % "%s is now %d" % len(followers))
 
         next_cursor = associates_chunk.get('next_cursor', None)
         if not next_cursor:
@@ -79,7 +89,8 @@ def debug_contents(f):
         pdb.set_trace()
 
 
-def track_deltas(screen_name, auth, tweeps_dir, track_type, log=sys.stdout):
+def track_deltas(screen_name, auth, tweeps_dir,
+                 track_type, allow_slow, log=sys.stdout):
 
     track_types = {'followers': {'add':'gained',
                                  'del':'lost'
@@ -116,7 +127,8 @@ def track_deltas(screen_name, auth, tweeps_dir, track_type, log=sys.stdout):
     now_screens = set([])
     if not test_mode:
         now_assoc = _fetch_current_associates(screen_name, auth,
-                                              track_type, log=log)
+                                              track_type, allow_slow=allow_slow,
+                                              log=log)
         now_xformed = dict([(f['screen_name'], f) for f in now_assoc])
         now_screens = set(now_xformed.keys())
 
@@ -192,6 +204,8 @@ def parse_args():
                         help='track followers')
     parser.add_argument('-F', '--friends', action='store_true',
                         help='track friends')
+    parser.add_argument('-S', '--sleep', action='store_true',
+                        help='support large accounts by sleeping to avoid timeouts')
     parser.add_argument('-d', '--dir', dest='dir', default=None,
                         help='dir where everything is stored')
     parser.add_argument('--dump_file', dest='fnames', action='append',
@@ -244,9 +258,9 @@ if __name__ == '__main__':
         for screen_name in args.screen_names:
             if args.followers:
                 track_deltas(screen_name, auth, args.dir,
-                             'followers', log=args.log)
+                             'followers', args.sleep, log=args.log)
             if args.friends:
                 track_deltas(screen_name, auth, args.dir,
-                             'friends', log=args.log)
+                             'friends', args.sleep, log=args.log)
 
     args.log.close()
