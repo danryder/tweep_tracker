@@ -9,15 +9,24 @@ import argparse
 import pdb
 
 def format_user_info(user):
-    return u'@%s -- following: %s, (follows %d, has %d followers, is%s verified): %s' \
+    val = u'@%s -- following: %s, (follows %d, has %d followers, is%s verified): %s' \
            % (user['screen_name'],
               u'YES' if user['following'] else u'NO',
               user['friends_count'],
               user['followers_count'],
               u' ' if user['verified'] else u' NOT',
               user['description'])
+    return val.encode('utf-8')
 
 def fetch_current_followers(screen_name, auth, max_calls=100, log=sys.stdout):
+    return _fetch_current_associates(screen_name, auth, 'followers',
+                                    max_calls, log)
+def fetch_current_friends(screen_name, auth, max_calls=100, log=sys.stdout):
+    return _fetch_current_associates(screen_name, auth, 'friends',
+                                    max_calls, log)
+
+def _fetch_current_associates(screen_name, auth, track_type,
+                             max_calls=100, log=sys.stdout):
 
     show_url = "https://api.twitter.com/1.1/users/show.json?screen_name=%s" % screen_name
     total_count = requests.get(show_url, auth=auth).json()['followers_count']
@@ -29,36 +38,36 @@ def fetch_current_followers(screen_name, auth, max_calls=100, log=sys.stdout):
     # ONLY RETURNS 200 at a time
     list_calls = (total_count / 200) + 1 
     if list_calls <= max_calls:
-        url = "https://api.twitter.com/1.1/followers/list.json?screen_name=%s&skip_status=true&include_user_entities=false&cursor=%s&count=200"
+        url = "https://api.twitter.com/1.1/%s/list.json?screen_name=%s&skip_status=true&include_user_entities=false&cursor=%s&count=200"
     else:
         raise Exception("%s has %d followers - require <= %d followers" \
                        % (screen_name, total_count, max_calls * 200))
 
-    followers = []
+    associates = []
 
     next_cursor="-1"
     for x in range(max_calls):
-        page_url = url % (screen_name, next_cursor)
-        followers_chunk = requests.get(page_url, auth=auth).json()
-        if 'errors' in followers_chunk:
-            log.write('%s\n' % followers_chunk['errors'])
+        page_url = url % (track_type, screen_name, next_cursor)
+        associates_chunk = requests.get(page_url, auth=auth).json()
+        if 'errors' in associates_chunk:
+            log.write('%s\n' % associates_chunk['errors'])
             sys.exit(1)
 
-        followers.extend(followers_chunk['users'])
-        log.write('%s\n' % "Followers is now %d" % len(followers))
+        associates.extend(associates_chunk['users'])
+        #log.write('%s\n' % "%s is now %d" % len(followers))
 
-        next_cursor = followers_chunk.get('next_cursor', None)
+        next_cursor = associates_chunk.get('next_cursor', None)
         if not next_cursor:
-            return followers
+            return associates
 
-    return followers
+    return associates
 
 
 def show_contents(f):
     print "User summaries in", f
     if os.path.exists(f):
         for f in pickle.load(file(f, 'r')):
-            user_str = u'%s\n' % u'USER %s' % format_user_info(f)
+            user_str = u'%s\n' % u'USER %s' % format_user_info(f).decode('utf-8')
             sys.stdout.write(user_str.encode('utf-8'))
         
 
@@ -70,7 +79,17 @@ def debug_contents(f):
         pdb.set_trace()
 
 
-def track_deltas(screen_name, auth, tweeps_dir, log=sys.stdout):
+def track_deltas(screen_name, auth, tweeps_dir, track_type, log=sys.stdout):
+
+    track_types = {'followers': {'add':'gained',
+                                 'del':'lost'
+                                },
+                   'friends':   {'add':'added',
+                                 'del':'removed'
+                                }
+                  }
+    if track_type not in track_types:
+        raise Exception("Valid track types: %s" % str(track_types))
 
     # prevent API usage limits by not querying
     # test_mode = True
@@ -80,9 +99,7 @@ def track_deltas(screen_name, auth, tweeps_dir, log=sys.stdout):
 
     out_dir = os.path.join(tweeps_dir, screen_name)
 
-    followers_file = os.path.join(out_dir, 'followers.db')
-    quitters_file = os.path.join(out_dir, 'quitters-%s.db' % now)
-    newbies_file = os.path.join(out_dir, 'newbies-%s.db' % now)
+    dbfile = os.path.join(out_dir, '%s.db' % track_type)
 
     try:
         os.makedirs(out_dir)
@@ -91,23 +108,24 @@ def track_deltas(screen_name, auth, tweeps_dir, log=sys.stdout):
             raise
 
     last_screens = set([])
-    if os.path.exists(followers_file):
-        last_followers = pickle.load(file(followers_file, 'r'))
-        last_xformed = dict([(f['screen_name'], f) for f in last_followers])
+    if os.path.exists(dbfile):
+        last_assoc = pickle.load(file(dbfile, 'r'))
+        last_xformed = dict([(f['screen_name'], f) for f in last_assoc])
         last_screens = set(last_xformed.keys())
 
     now_screens = set([])
     if not test_mode:
-        now_followers = fetch_current_followers(screen_name, auth, log=log)
-        now_xformed = dict([(f['screen_name'], f) for f in now_followers])
+        now_assoc = _fetch_current_associates(screen_name, auth,
+                                              track_type, log=log)
+        now_xformed = dict([(f['screen_name'], f) for f in now_assoc])
         now_screens = set(now_xformed.keys())
 
-    quitters_screens = last_screens - now_screens
-    newbies_screens = now_screens - last_screens
+    del_screens = last_screens - now_screens
+    add_screens = now_screens - last_screens
 
-    if not len(quitters_screens) and not len(newbies_screens):
-        log.write("At %s, no change - @%s has the same %d followers\n" \
-                  % (now, screen_name, len(last_screens)))
+    if not len(del_screens) and not len(add_screens):
+        log.write("At %s, no change - @%s has the same %d %s\n" \
+                  % (now, screen_name, len(last_screens), track_type))
 
     else:
         delta = len(now_screens) - len(last_screens)
@@ -116,31 +134,36 @@ def track_deltas(screen_name, auth, tweeps_dir, log=sys.stdout):
             change = '%d' % delta
         elif delta > 0:
             change = '+%d' % delta
-        log.write("At %s, @%s has %d(%s) total followers\n" % (now, screen_name,
+        log.write("At %s, @%s has %d(%s) total %s\n" % (now, screen_name,
                                                        len(now_screens),
-                                                       change
-                                                       ))
-        if len(quitters_screens):
-            log.write("@%s lost %d: %s\n" % (screen_name, len(quitters_screens),
-                                            quitters_screens))
-            quitters = [last_xformed[q] for q in quitters_screens]
-            for q in quitters:
-                log.write('- GOODBYE %s\n' % format_user_info(q))
-            with open(quitters_file, 'w') as qf:
-                pickle.dump(quitters, qf)
+                                                       change, track_type))
+        if len(del_screens):
+            log.write("@%s %s %d %s: %s\n" % (screen_name,
+                      track_types[track_type]['del'],
+                      len(del_screens), track_type, del_screens))
+            assoc_del = [last_xformed[x] for x in del_screens]
+            for x in assoc_del:
+                log.write('- GOODBYE %s\n' % format_user_info(x))
+            del_file = os.path.join(out_dir, '%s_%s_del-%d.db' \
+                       % (now, track_type, len(del_screens)))
+            with open(del_file, 'w') as df:
+                pickle.dump(assoc_del, df)
            
-        if len(newbies_screens):
-            log.write("@%s got %d: %s\n" % (screen_name, len(newbies_screens),
-                                            newbies_screens))
-            newbies = [now_xformed[n] for n in newbies_screens]
-            for n in newbies:
-                log.write('+ HELLO %s\n' % format_user_info(n))
-            with open(newbies_file, 'w') as nf:
-                pickle.dump(newbies, nf)
+        if len(add_screens):
+            log.write("@%s %s %d %s: %s\n" % (screen_name,
+                      track_types[track_type]['add'],
+                      len(add_screens), track_type, add_screens))
+            assoc_add = [now_xformed[x] for x in add_screens]
+            for x in assoc_add:
+                log.write('+ HELLO %s\n' % format_user_info(x))
+            add_file = os.path.join(out_dir, '%s_%s_add-%d.db' \
+                       % (now, track_type, len(add_screens)))
+            with open(add_file, 'w') as af:
+                pickle.dump(assoc_add, af)
 
-        if now_followers and not test_mode:
-            with open(followers_file, 'w') as ff:
-                pickle.dump(now_followers, ff)
+        if now_assoc and not test_mode:
+            with open(dbfile, 'w') as ff:
+                pickle.dump(now_assoc, ff)
 
 
 def load_oauth(d):
@@ -160,25 +183,45 @@ def load_oauth(d):
                   auths["user_token"],
                   auths["user_secret"])
    
-if __name__ == '__main__':
-
-    proggy = os.path.splitext(os.path.basename(sys.argv[0]))[0]
-    default_tweeps_dir=os.path.join(os.path.expanduser("~"), '.'+proggy)
-    parser = argparse.ArgumentParser(description='Track twitter followers')
-    parser.add_argument('-d', '--dir', dest='dir', default=default_tweeps_dir,
-                        help='dir where everything is stored')
+def parse_args():
+    parser = argparse.ArgumentParser(description="Track 'yo tweeps, fool")
     parser.add_argument('-s', '--screen_name', dest='screen_names',
                         action='append',
                         help='twitter account to check')
-    parser.add_argument('-f', '--fname', dest='fnames', action='append',
-                        help='file to dump')
-    parser.add_argument('-F', '--debugfname', dest='dfnames', action='append',
-                        help='file to debug')
+    parser.add_argument('-f', '--followers', action='store_true',
+                        help='track followers')
+    parser.add_argument('-F', '--friends', action='store_true',
+                        help='track friends')
+    parser.add_argument('-d', '--dir', dest='dir', default=None,
+                        help='dir where everything is stored')
+    parser.add_argument('--dump_file', dest='fnames', action='append',
+                        help='file(s) to dump contents to stdout')
+    parser.add_argument('--debug_file', dest='dfnames', action='append',
+                        help='file to examine in debugger')
     parser.add_argument('-l', '--log', default=sys.stdout,
                         type=argparse.FileType('a'),
-                        help='file where the activity should be stored')
+                        help='where to track activity')
     args = parser.parse_args()
+
+    if (args.friends or args.followers) and not args.screen_names:
+        log.write("Specified friends or followers switch but no screen names\n")
+        sys.exit(1)
+
+    if not args.friends and not args.followers and args.screen_names:
+        args.log.write("Specified screen name, defaulting to followers\n")
+        args.followers = True
  
+    if not args.dir:
+        proggy = os.path.splitext(os.path.basename(sys.argv[0]))[0]
+        default_dir = os.path.join(os.path.expanduser("~"), '.'+proggy)
+        args.log.write("Using default dir: %s\n" % default_dir)
+        args.dir = default_dir
+    return args
+
+if __name__ == '__main__':
+
+    args = parse_args()
+
     if args.fnames:
         for fname in args.fnames:
             show_contents(fname)
@@ -199,6 +242,11 @@ if __name__ == '__main__':
         auth = load_oauth(args.dir)
 
         for screen_name in args.screen_names:
-            track_deltas(screen_name, auth, args.dir, log=args.log)
+            if args.followers:
+                track_deltas(screen_name, auth, args.dir,
+                             'followers', log=args.log)
+            if args.friends:
+                track_deltas(screen_name, auth, args.dir,
+                             'friends', log=args.log)
 
     args.log.close()
