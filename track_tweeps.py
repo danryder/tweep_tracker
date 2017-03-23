@@ -1,5 +1,6 @@
 #/usr/bin/env python
 # -*- coding: utf-8 -*-
+
 import sys, os, errno
 import time, datetime
 import requests
@@ -29,9 +30,11 @@ def _fetch_current_associates(screen_name, auth, track_type,
     # RETURNS 5,000 at a time (but only the ids)
     # ids_url = "https://api.twitter.com/1.1/followers/ids.json?screen_name=%s&cursor=%s"
 
-    # ONLY RETURNS 200 at a time
-    url = "https://api.twitter.com/1.1/%s/list.json?screen_name=%s&skip_status=true&include_user_entities=false&cursor=%s&count=200"
-    list_calls = (total_count / 200) + 1 
+    # These calls max out at 200
+    count = 200
+
+    url = "https://api.twitter.com/1.1/%s/list.json?screen_name=%s&skip_status=true&include_user_entities=false&cursor=%s&count=%d"
+    list_calls = (total_count / count) + 1
     if list_calls > max_calls:
         warning = "%s has %d %s, exceeds %d" \
                   % (screen_name, total_count, track_type, max_calls * 200)
@@ -39,7 +42,7 @@ def _fetch_current_associates(screen_name, auth, track_type,
             raise Exception(warning)
 
         log.write(warning + ' - slow mode enabled...\n')
-        estimate = sleep * (total_count / (200 * max_calls))
+        estimate = sleep * (total_count / (count * max_calls))
         log.write("This will take about %d minutes\n" % estimate)
         log.write("Sleeping for %d minutes every %d calls...\n" \
                    % (sleep, max_calls))
@@ -48,16 +51,20 @@ def _fetch_current_associates(screen_name, auth, track_type,
 
     next_cursor="-1"
     calls = 0
+    sleeps = 0
+
     while(1):
         if calls >= max_calls:
-            log.write("Sleeping for %d minutes...\n" % sleep)
+            now = datetime.datetime.now().strftime('%Y%m%d_%H:%M:%S')
+            done_pct = (100.0 * (sleeps + 1) * max_calls) / (list_calls + 1)
+            log.write("At %s, %5.2f%% done, sleeping for %d minutes...\n" \
+                      % (now, done_pct, sleep))
             time.sleep(60 * sleep)
             calls = 0
+            sleeps = sleeps + 1
 
-        page_url = url % (track_type, screen_name, next_cursor)
+        page_url = url % (track_type, screen_name, next_cursor, count)
 
-        # associates_chunk = {'next_cursor':'foo',
-        #                     'users':[x for x in range(200)]}
         associates_chunk = requests.get(page_url, auth=auth).json()
         if 'errors' in associates_chunk:
             log.write('%s\n' % associates_chunk['errors'])
@@ -79,7 +86,7 @@ def show_contents(f):
         for f in pickle.load(file(f, 'r')):
             user_str = u'%s\n' % u'USER %s' % format_user_info(f).decode('utf-8')
             sys.stdout.write(user_str.encode('utf-8'))
-        
+
 
 def debug_contents(f):
     print "User dicts in", f
@@ -160,7 +167,7 @@ def track_deltas(screen_name, auth, tweeps_dir,
                        % (now, track_type, len(del_screens)))
             with open(del_file, 'w') as df:
                 pickle.dump(assoc_del, df)
-           
+
         if len(add_screens):
             log.write("@%s %s %d %s: %s\n" % (screen_name,
                       track_types[track_type]['add'],
@@ -194,7 +201,7 @@ def load_oauth(d):
                   auths["app_secret"],
                   auths["user_token"],
                   auths["user_secret"])
-   
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Track 'yo tweeps, fool")
     parser.add_argument('-s', '--screen_name', dest='screen_names',
@@ -224,7 +231,7 @@ def parse_args():
     if not args.friends and not args.followers and args.screen_names:
         args.log.write("Specified screen name, defaulting to followers\n")
         args.followers = True
- 
+
     if not args.dir:
         proggy = os.path.splitext(os.path.basename(sys.argv[0]))[0]
         default_dir = os.path.join(os.path.expanduser("~"), '.'+proggy)
