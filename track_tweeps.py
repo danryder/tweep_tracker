@@ -6,6 +6,7 @@ import time, datetime
 import requests
 from requests_oauthlib import OAuth1
 import pickle
+import gzip
 import argparse
 import pdb
 
@@ -83,7 +84,7 @@ def _fetch_current_associates(screen_name, auth, track_type,
 def show_contents(f):
     print "User summaries in", f
     if os.path.exists(f):
-        for f in pickle.load(file(f, 'r')):
+        for f in pickle.load(gzip.open(f, 'r')):
             user_str = u'%s\n' % u'USER %s' % format_user_info(f).decode('utf-8')
             sys.stdout.write(user_str.encode('utf-8'))
 
@@ -91,7 +92,7 @@ def show_contents(f):
 def debug_contents(f):
     print "User dicts in", f
     if os.path.exists(f):
-        users = pickle.load(file(f, 'r'))
+        users = pickle.load(gzip.open(f, 'r'))
         print "Examining %d users" % len(users)
         pdb.set_trace()
 
@@ -117,7 +118,7 @@ def track_deltas(screen_name, auth, tweeps_dir,
 
     out_dir = os.path.join(tweeps_dir, screen_name)
 
-    dbfile = os.path.join(out_dir, '%s.db' % track_type)
+    dbfile = os.path.join(out_dir, '%s.db.gz' % track_type)
 
     try:
         os.makedirs(out_dir)
@@ -127,7 +128,7 @@ def track_deltas(screen_name, auth, tweeps_dir,
 
     last_screens = set([])
     if os.path.exists(dbfile):
-        last_assoc = pickle.load(file(dbfile, 'r'))
+        last_assoc = pickle.load(gzip.open(dbfile))
         last_xformed = dict([(f['screen_name'], f) for f in last_assoc])
         last_screens = set(last_xformed.keys())
 
@@ -163,9 +164,9 @@ def track_deltas(screen_name, auth, tweeps_dir,
             assoc_del = [last_xformed[x] for x in del_screens]
             for x in assoc_del:
                 log.write('- GOODBYE %s\n' % format_user_info(x))
-            del_file = os.path.join(out_dir, '%s_%s_del-%d.db' \
+            del_file = os.path.join(out_dir, '%s_%s_del-%d.db.gz' \
                        % (now, track_type, len(del_screens)))
-            with open(del_file, 'w') as df:
+            with gzip.open(del_file, 'w') as df:
                 pickle.dump(assoc_del, df)
 
         if len(add_screens):
@@ -175,13 +176,13 @@ def track_deltas(screen_name, auth, tweeps_dir,
             assoc_add = [now_xformed[x] for x in add_screens]
             for x in assoc_add:
                 log.write('+ HELLO %s\n' % format_user_info(x))
-            add_file = os.path.join(out_dir, '%s_%s_add-%d.db' \
+            add_file = os.path.join(out_dir, '%s_%s_add-%d.db.gz' \
                        % (now, track_type, len(add_screens)))
-            with open(add_file, 'w') as af:
+            with gzip.open(add_file, 'w') as af:
                 pickle.dump(assoc_add, af)
 
         if now_assoc and not test_mode:
-            with open(dbfile, 'w') as ff:
+            with gzip.open(dbfile, 'w') as ff:
                 pickle.dump(now_assoc, ff)
 
 
